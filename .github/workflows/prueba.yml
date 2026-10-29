@@ -1,0 +1,78 @@
+
+name: Prueba Carrefour
+
+on:
+  workflow_dispatch:
+
+jobs:
+  comprobar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Instalar dependencias
+        run: pip install requests beautifulsoup4
+
+      - name: Comprobar precio
+        env:
+          TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          cat > /tmp/check.py <<'PY'
+          import os, json, requests
+          from bs4 import BeautifulSoup
+
+          url = "https://www.carrefour.es/lego-harry-potter-castillo-y-terrenos-de-hogwarts-18-anos-76419/VC4A-24541236/p"
+          token = os.environ["TOKEN"]
+          chat = os.environ["CHAT"]
+
+          def avisar(msg):
+              r = requests.post(
+                  f"https://api.telegram.org/bot{token}/sendMessage",
+                  json={"chat_id": chat, "text": msg},
+                  timeout=20
+              )
+              r.raise_for_status()
+
+          try:
+              r = requests.get(url, headers={
+                  "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130 Safari/537.36"
+              }, timeout=30)
+              print("HTTP:", r.status_code)
+              r.raise_for_status()
+              soup = BeautifulSoup(r.text, "html.parser")
+
+              def buscar(obj):
+                  if isinstance(obj, dict):
+                      tipo = obj.get("@type", [])
+                      if tipo == "Product" or (isinstance(tipo, list) and "Product" in tipo):
+                          yield obj
+                      for v in obj.values():
+                          yield from buscar(v)
+                  elif isinstance(obj, list):
+                      for v in obj:
+                          yield from buscar(v)
+
+              productos = []
+              for tag in soup.select('script[type="application/ld+json"]'):
+                  try:
+                      productos.extend(buscar(json.loads(tag.string or tag.get_text())))
+                  except Exception:
+                      pass
+
+              for p in productos:
+                  offers = p.get("offers", {})
+                  if isinstance(offers, list):
+                      offers = offers[0] if offers else {}
+                  if isinstance(offers, dict) and offers.get("price"):
+                      precio = float(str(offers["price"]).replace(",", "."))
+                      print("Producto:", p.get("name"))
+                      print("Precio detectado:", precio)
+                      avisar(f"Prueba Carrefour: precio detectado {precio:.2f} €.\nObjetivo: 135 €.\nRevisa el registro de GitHub para confirmar el producto y vendedor.")
+                      break
+              else:
+                  avisar("Prueba Carrefour: la página responde, pero no he encontrado un precio verificable. Revisa el registro de GitHub.")
+          except Exception as e:
+              print(type(e).__name__, str(e))
+              avisar(f"No he podido leer el precio de Carrefour. Error: {type(e).__name__}. Consulta el registro de GitHub.")
+              raise
+          PY
+          python /tmp/check.py
